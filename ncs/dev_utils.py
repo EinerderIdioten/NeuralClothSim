@@ -7,13 +7,12 @@ import math
 import matplotlib.pyplot as plt
 
 def compute_edge_normals(mesh, topo: MeshTopo):
-    ea, eb = np.zeros((topo.fN, 3), dtype=float), np.zeros((topo.fN, 3), dtype=float)
+    ea, eb = np.zeros((topo.fN, 3), dtype=np.float32), np.zeros((topo.fN, 3), dtype=np.float32)
     for i in range(topo.fN):
         ea[i] = mesh.point(mesh.vertex_handle(topo.f2v[i][1])) - mesh.point(mesh.vertex_handle(topo.f2v[i][0]))
         eb[i] = mesh.point(mesh.vertex_handle(topo.f2v[i][2])) - mesh.point(mesh.vertex_handle(topo.f2v[i][0]))
-    fn = np.cross(ea, eb, axis=-1)
-
-    en = np.zeros((topo.eN,3))
+    fn = np.cross(ea, eb, axis=-1).astype(np.float32)
+    en = np.zeros((topo.eN,3), dtype=np.float32)
     for i in range(topo.hN):
         if topo.h2f[i] < 0:
             continue
@@ -24,10 +23,16 @@ def compute_edge_normals(mesh, topo: MeshTopo):
     #    en = en/norm
     return en
 
-def compute_midpoint(mesh, heh):
+#def compute_midpoint(mesh, heh):
+#    topointh, frompointh = mesh.to_vertex_handle(heh), mesh.from_vertex_handle(heh)
+#    topoint, frompoint = np.array(mesh.point(topointh)), np.array(mesh.point(frompointh))
+#    return (topoint + frompoint) / 2.0
+
+def compute_midpoint(mesh, heh, vertices:tf.Tensor):
     topointh, frompointh = mesh.to_vertex_handle(heh), mesh.from_vertex_handle(heh)
-    topoint, frompoint = np.array(mesh.point(topointh)), np.array(mesh.point(frompointh))
-    return (topoint + frompoint) / 2.0
+    topoint_idx, frompoint_idx = topointh.idx(), frompointh.idx()
+    topoint, frompoint = tf.gather(vertices, topoint_idx, axis=1), tf.gather(vertices, frompoint_idx, axis=1)
+    return (topoint + frompoint)/2 # (19, 3)
 
 """
 def compute_projection(vec, normals):
@@ -39,7 +44,7 @@ def compute_projection(vec, normals):
 """
 
 def compute_projection(vecs, normals):
-    proj_onto_normal = tf.reduce_sum(vecs*normals, axis=1, keepdims=True)
+    proj_onto_normal = tf.reduce_sum(vecs*normals, axis=-1, keepdims=True)
     proj_onto_plane = vecs - proj_onto_normal*normals
     return proj_onto_plane
 

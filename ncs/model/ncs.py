@@ -13,6 +13,7 @@ from .layers import *
 from global_vars import BODY_DIR
 
 
+
 class NCS(tf.keras.Model):
     def __init__(self, config, **kwargs):
         super().__init__(**kwargs)
@@ -49,6 +50,7 @@ class NCS(tf.keras.Model):
         self.build_lbs()
         self.build_encoder()
         self.build_decoder()
+
 
     def build_lbs(self):
         self.rot = Rotation(name="Rotation")
@@ -132,7 +134,8 @@ class NCS(tf.keras.Model):
             self.pinning_loss = PinningLoss(self.garment, self.config.pin_blend_weights)
         # Developable 
         # self.developable_loss = curvatureLoss(self.garment)
-        self.developable_loss = projDevLoss(self.trimesh, self.topo)
+        self.developable_loss = projDevLoss(self.trimesh, self.topo, self.garment)
+        self.developable_metric = MyMetric(name='developable')
 
         
     def compute_losses_and_metrics(self, body, vertices, unskinned, training):
@@ -155,7 +158,6 @@ class NCS(tf.keras.Model):
                 self.config.loss.cloth.stretch * stretch_loss
                 + self.config.loss.cloth.shear * shear_loss
             )
-
         elif self.config.cloth_model == "stvk":
             cloth_loss, strain_error = self.cloth_loss(vertices)
 
@@ -171,8 +173,9 @@ class NCS(tf.keras.Model):
         # Pinning
         if self.garment.pinning:
             pinning_loss = self.pinning_loss(unskinned, self.cloth_blend_weights)
-        # developable_energy = self.developable_loss(vertices)
-        developable_energy = self.developable_loss()
+        # Developable
+        developable_loss, developable_error = self.developable_loss(vertices)
+        
         
         # Combine loss
         loss = (
@@ -180,7 +183,7 @@ class NCS(tf.keras.Model):
             + self.config.loss.bending * bending_loss
             + self.config.loss.collision_weight * collision_loss
             + gravitational_potential
-            + self.config.loss.developable * developable_energy
+            + self.config.loss.developable * developable_loss
         )
         if self.garment.pinning:
             loss += self.config.loss.pinning * pinning_loss
@@ -196,6 +199,7 @@ class NCS(tf.keras.Model):
         self.bending_metric.update_state(bending_error)
         self.collision_metric.update_state(collision_error)
         self.gravity_metric.update_state(gravitational_potential)
+        self.developable_metric.update_state(developable_error)
         return loss
 
     def compute_dynamic_losses_and_metrics(self, vertices):

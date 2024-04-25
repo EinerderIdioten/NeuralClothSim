@@ -159,6 +159,7 @@ def graph_laplacian(graph):
 
 @tf.function
 def face_normals(vertices, faces, normalized=False):
+    # (19, 3553, 3)
     input_shape = vertices.get_shape()
     vertices = tf.reshape(vertices, (-1, *input_shape[-2:]))
     v01 = tf.gather(vertices, faces[:, 1], axis=1) - tf.gather(
@@ -173,6 +174,23 @@ def face_normals(vertices, faces, normalized=False):
     normals = tf.reshape(normals, (*input_shape[:-2], -1, 3))
     return normals
 
+@tf.function
+def face_normals_one_frame(vertices, faces, normalized=False):
+    # (3553, 3)
+    input_shape = vertices.get_shape()
+    # vertices = tf.reshape(vertices, (-1, *input_shape[-2:]))
+    v01 = tf.gather(vertices, faces[:, 1], axis=0) - tf.gather(
+        vertices, faces[:, 0], axis=0
+    )
+    v12 = tf.gather(vertices, faces[:, 2], axis=0) - tf.gather(
+        vertices, faces[:, 1], axis=0
+    )
+    normals = tf.linalg.cross(v01, v12)
+    if normalized:
+        normals /= tf.norm(normals, axis=-1, keepdims=True) + tf.keras.backend.epsilon()
+    #normals = tf.reshape(normals, (*input_shape[:-2], -1, 3))
+    print(f'face normals shape {normals.shape}')
+    return normals
 
 @tf.function
 def vertex_normals(vertices, faces):

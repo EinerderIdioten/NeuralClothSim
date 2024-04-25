@@ -87,6 +87,7 @@ class Garment:
         axis_angle = axis * angle[..., None]
         rotations = R.from_rotvec(axis_angle).as_matrix()
         triangles = self.vertices[self.faces]
+        print(f'shape of triangles is {triangles.shape} and rotations {rotations.shape}')
         triangles = np.einsum("abc,adc->abd", triangles, rotations)[..., :2]
         uv_matrices = np.stack(
             [triangles[:, 1] - triangles[:, 0], triangles[:, 2] - triangles[:, 0]],

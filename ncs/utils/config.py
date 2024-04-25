@@ -37,6 +37,7 @@ class MainConfig(Config):
     @property
     def time_step(self):
         return 1 / self.data.fps
+        #return 0.66666666667
 
     @property
     def num_time_steps(self):

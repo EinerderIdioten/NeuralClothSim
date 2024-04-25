@@ -1,7 +1,6 @@
 import openmesh
 import numpy as np
 import tensorflow as tf
-import open3d 
 
 
 class MeshTopo:

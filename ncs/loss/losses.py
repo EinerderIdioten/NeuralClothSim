@@ -1,6 +1,6 @@
 from typing import Any
 import tensorflow as tf
-from utils.mesh import vertex_normals, face_normals, compute_vertex_face_adjacency, compute_sparse_adjacency, nonzero_slice_row
+from utils.mesh import vertex_normals, face_normals, compute_vertex_face_adjacency, face_normals_one_frame, compute_sparse_adjacency, nonzero_slice_row
 from dev_utils import compute_edge_normals, compute_midpoint, compute_projection
 from model.cloth import Garment
 import numpy as np
@@ -47,9 +47,11 @@ class ClothLoss:
             ],
             axis=2,
         )
+        
         w = tf.einsum("abcd,bce->abed", dX, self.uv_matrices)
 
         stretch = tf.norm(w, axis=-1) - 1
+        print(f'shape of stretch is {stretch.shape}')
         stretch_loss = self.face_areas[:, None] * stretch**2
         stretch_loss = tf.reduce_sum(stretch_loss, axis=[1, 2])
         stretch_loss = tf.reduce_mean(stretch_loss)
@@ -486,31 +488,32 @@ class projDevLoss():
             print(e)
 '''  
 class projDevLoss():
-    def __init__(self, mesh, topo):
-        self.delta_N = tf.zeros(topo.eN)
-        self.edge_normals = compute_edge_normals(mesh, topo)
-        self.edge_tensor, self.valid_edges, self.mid_points = self.get_edge_tensor(mesh, topo)
+    def __init__(self, mesh, topo, garment):
+        self.mesh = mesh
+        self.topo = topo
+        self.garment = garment
+        self.init = False
+        self.init_curvature = None
         
-        
-
+        self.edge_ids, self.valid_edges, self.adj_faces = self.get_edge_tensor(self.mesh, self.topo)
     
     @tf.function
     def get_edge_tensor(self, mesh, topo):
         half_edges = []
         valid_edges = []
-        mid_points = []
-        for eh in mesh.edges(): 
+        adj_faces = []
+        
+        
+        for eh in mesh.edges():
             edge_idx = eh.idx()
             
             heh0 = mesh.halfedge_handle(edge_idx<<1)
-            mid_point_cur_edge = compute_midpoint(mesh, heh0)
-            mid_points.append(mid_point_cur_edge)
-            
+            topoint, frompoint = mesh.from_vertex_handle(heh0).idx(), mesh.to_vertex_handle(heh0).idx()
             # Check if both vertices are boundary vertices
-            if topo.vb[mesh.from_vertex_handle(heh0).idx()] and topo.vb[mesh.to_vertex_handle(heh0).idx()]:
+            if topo.vb[topoint] and topo.vb[frompoint]:
                 continue
 
-            valid_edges.append(edge_idx)
+            valid_edges.append([topoint, frompoint])
             
             # First set of three half-edges related to heh0
             half_edges.append(heh0.idx())
@@ -523,58 +526,121 @@ class projDevLoss():
             half_edges.append(mesh.next_halfedge_handle(heh1).idx())
             half_edges.append(mesh.next_halfedge_handle(mesh.next_halfedge_handle(heh1)).idx())
 
+            adj_faces.append([topo.h2f[heh0.idx()], topo.h2f[heh1.idx()]])
+            
         # Convert list to TensorFlow tensor
         half_edge_tensor = tf.constant(half_edges, dtype=tf.int32)
         #mid_points_tensor = tf.constant(mid_points,tf.float64,(len(mid_points),3))
-        mid_points_tensor = tf.constant(np.stack(mid_points), dtype=tf.float64)
         shifted_indices = tf.bitwise.right_shift(half_edge_tensor, 1)
         edge_ids = tf.reshape(shifted_indices, [-1, 2, 3])
-        
+        valid_edges = np.array(valid_edges)
+        adj_faces = np.array(adj_faces)
         # formulate midpoints as (num_edges, 3)
         # formulate edge_ids as (num_edges, 2, 3)
-        return edge_ids, valid_edges, mid_points_tensor
+        return edge_ids, valid_edges, adj_faces
+
+    @tf.function
+    def get_midpoints(self, edges, vertices):
+        # edges (num_valid_edges, 2)
+        topoints, frompoints = tf.gather(vertices, edges[:,1], axis=0), tf.gather(vertices, edges[:,0], axis=0)
+        return (topoints + frompoints)/2
+
+    @tf.function
+    def get_edge_normals(self, vertices):
+        f_normals = face_normals_one_frame(vertices, self.garment.faces)
+        # f_normals of (19, 6956, 3)
+        # adj faces of (10332, 2)
+        edge_normals = tf.gather(f_normals, self.adj_faces[:, 0], axis=0) + tf.gather(f_normals, self.adj_faces[:, 0], axis=0)
+        print(f'edge normals shape {edge_normals.shape}')
+        return edge_normals
     
-    def __call__(self):
-        edge_ids = self.edge_tensor
-        mid_points_tensor = self.mid_points
-        edge_normals = self.edge_normals
-        valid_edges = self.valid_edges
+    @tf.function
+    def get_eigen_one_frame(self, vertices): 
+        edge_ids, valid_edges = self.edge_ids, self.valid_edges
+        # mid_points_tensor = self.mid_points
+        mid_points_tensor = self.get_midpoints(valid_edges, vertices)
+        edge_normals = self.get_edge_normals(vertices)
+        
+        #print(f'mid points shape {mid_points_tensor.shape}')
+        #print(f'edge_ids shape {edge_ids.shape}')
+        #print(f"edge normals {edge_normals.shape}")
         
         adj_edge_ids = tf.reshape(edge_ids[:, :, 1:], (-1, 4))
-        quad_vertices = tf.gather(mid_points_tensor, adj_edge_ids)
+        quad_vertices = tf.gather(mid_points_tensor, adj_edge_ids, axis=0)
         # quad vertices has shape (num_edges, 4, 3)
         edge_ids = tf.reshape(edge_ids, (-1, 6))
-        N = tf.gather(edge_normals, edge_ids)
+        # edge normals (10332, 3)
+        #gather_normals = [tf.gather(edge_normals[b], edge_ids, axis=0) for b in range(edge_normals.shape[0])]
+        N = tf.gather(edge_normals, edge_ids, axis=0)
+        # N = tf.stack(gather_normals)
         #diags are associated to each edge
+        #quad (10332, 4, 3)
         diags = tf.stack([quad_vertices[:,2] - quad_vertices[:,0], quad_vertices[:,3] - quad_vertices[:,1]], axis=1)
+        #diags (10332, 2, 3)
         proj_plane_normals = tf.linalg.cross(diags[:,0], diags[:,1])
+        # proj_plane_normals (10332, 3)
         
-        areas = tf.linalg.norm(proj_plane_normals, axis=-1)
-        areas_power = tf.math.pow(areas, 2/3)
-        areas_power = tf.reshape(areas_power, (areas.shape[0], 1, 1))
+        #areas = tf.linalg.norm(proj_plane_normals, axis=-1)
+        #areas_power = tf.math.pow(areas, 2/3)
+        #areas_power = tf.reshape(areas_power, (areas.shape[0], 1, 1))
         
+        # N (10332, 6, 3)
         dN = tf.stack([N[:,1]-N[:,4], N[:,2]-N[:,5]], axis=1)
+        # dN (10332, 2, 3)
         Pr_dN = tf.stack([compute_projection(dN[:,0], proj_plane_normals),\
             compute_projection(dN[:,1], proj_plane_normals),\
-            tf.zeros(shape=(len(valid_edges),3), dtype=tf.float64)], axis=-1)
+            tf.zeros(shape=dN[:,0,:].shape, dtype=tf.float32)], axis=-1)
         
         A = tf.stack([diags[:,0], diags[:,1], proj_plane_normals], axis=-1)
         B = Pr_dN
+        l = 1e-5 * tf.eye(3, batch_shape=A[:,0,0].shape)
+        A = A+l
+
+        phi_tilde = tf.linalg.solve(A, B)
+        eigenvalues, _ = tf.linalg.eigh(phi_tilde)
+        return eigenvalues
+    
+    @tf.function
+    def get_curvature_one_frame(self, eigenvalues):
+        threshold = 1e-4
+        non_zero_eigenvalues = tf.where(tf.abs(eigenvalues) < threshold, 1.0, eigenvalues)
+        return tf.reduce_prod(non_zero_eigenvalues, axis=1)
+    
+    def __call__(self, vertices):
+        if self.init == False:
+            eigenvalues = self.get_eigen_one_frame(vertices[0])
+            self.init_curvature, cur_curvature = self.get_curvature_one_frame(eigenvalues)
+            self.init = True
+        else:
+            eigenvalues = self.get_eigen_one_frame(vertices[-1])
+            cur_curvature = self.get_curvature_one_frame(eigenvalues)
+        diff_per_edge = self.init_curvature - cur_curvature
+        loss = tf.norm(diff_per_edge,ord=2,axis=0)
+        error = tf.norm(diff_per_edge, ord=1, axis=0)
+        return loss, error
         
-        try:
-            phi_tilde = tf.linalg.solve(A, B)
-            eigenvalues, _ = tf.linalg.eigh(phi_tilde/areas_power)
-            eigenvalues = eigenvalues[tf.abs(eigenvalues) > 0.000001]
-            assert(eigenvalues.shape[1]==2),'less eigenvalues!'
+
+        
             
-            delta_N = eigenvalues[:,0] * eigenvalues[:1]
-            dev_loss = tf.reduce_sum(delta_N)
-            return dev_loss
+
+        # mask_not_zero = tf.not_equal(eigenvalues, 0.0)
+        # non_zero_eigenvalues = tf.reshape(tf.boolean_mask(eigenvalues, mask_not_zero),[eigenvalues.shape[0], 2])
+        # non_zero_eigenvalues = tf.boolean_mask(eigenvalues, mask_not_zero),[eigenvalues.shape[0], 2]
         
-        except tf.errors.InvalidArgumentError as e:
-            print(e)
+        # eigenvalues = eigenvalues[tf.abs(eigenvalues) > 0.000001]
+        # assert(eigenvalues.shape[1]==2),'less eigenvalues!'
+        
+        # delta_N = non_zero_eigenvalues[:,0] * non_zero_eigenvalues[:1]
+        energy_per_edge = tf.reduce_sum(tf.norm(eigenvalues, ord=2, axis=-1), axis=-1)
+        error_per_edge = tf.reduce_sum(tf.norm(eigenvalues, ord=1, axis=-1), axis = -1)
+        dev_loss = tf.reduce_mean(energy_per_edge, axis=0)
+        dev_error = tf.reduce_mean(error_per_edge, axis = 0)
         
         
-        
-        
-        
+        return dev_loss, dev_error
+
+    
+    
+    
+    
+    

@@ -84,4 +84,5 @@ if __name__ == "__main__":
         sys.exit()
 
     config = MainConfig(opts.config)
+    
     main(config)

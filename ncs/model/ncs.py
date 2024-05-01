@@ -61,7 +61,8 @@ class NCS(tf.keras.Model):
             trainable=self.config.blend_weights_trainable,
             name="LBS/Cloth",
         )
-
+        
+    '''
     def build_encoder(self):
         self.static_encoder = [
             SkelFlatten(),
@@ -78,7 +79,23 @@ class NCS(tf.keras.Model):
             FullyConnected(512, act=tf.nn.relu, use_bias=False, name="dyn_enc/fc3"),
             GRU(512, use_bias=False, return_sequences=True, name="dyn_enc/gru"),
         ]
-
+    '''
+    def build_encoder(self):
+        self.static_encoder = [
+            SkelFlatten(),
+            FullyConnected(64, act=tf.nn.leaky_relu, name="stc_enc/fc0"),
+            FullyConnected(128, act=tf.nn.leaky_relu, name="stc_enc/fc1"),
+            FullyConnected(256, act=tf.nn.leaky_relu, name="stc_enc/fc2"),
+            FullyConnected(512, act=tf.nn.leaky_relu, name="stc_enc/fc3"),
+        ]
+        self.dynamic_encoder = [
+            FullyConnected(32, act=tf.nn.leaky_relu, use_bias=False, name="dyn_enc/fc0"),
+            FullyConnected(32, act=tf.nn.leaky_relu, use_bias=False, name="dyn_enc/fc1"),
+            SkelFlatten(),
+            FullyConnected(512, act=tf.nn.leaky_relu, use_bias=False, name="dyn_enc/fc2"),
+            FullyConnected(512, act=tf.nn.leaky_relu, use_bias=False, name="dyn_enc/fc3"),
+            GRU(512, use_bias=False, return_sequences=True, name="dyn_enc/gru"),
+        ] 
     def build_decoder(self):
         self.decoder = [
             FullyConnected(512, act=tf.nn.relu, name="dec/fc0"),
@@ -134,8 +151,8 @@ class NCS(tf.keras.Model):
             self.pinning_loss = PinningLoss(self.garment, self.config.pin_blend_weights)
         # Developable 
         # self.developable_loss = curvatureLoss(self.garment)
-        self.developable_loss = projDevLoss(self.trimesh, self.topo, self.garment)
-        self.developable_metric = MyMetric(name='developable')
+        # self.developable_loss = projDevLoss(self.trimesh, self.topo, self.garment)
+        # self.developable_metric = MyMetric(name='developable')
 
         
     def compute_losses_and_metrics(self, body, vertices, unskinned, training):
@@ -173,8 +190,9 @@ class NCS(tf.keras.Model):
         # Pinning
         if self.garment.pinning:
             pinning_loss = self.pinning_loss(unskinned, self.cloth_blend_weights)
+
         # Developable
-        developable_loss, developable_error = self.developable_loss(vertices)
+        # developable_loss, developable_error = self.developable_loss(vertices)
         
         
         # Combine loss
@@ -183,7 +201,7 @@ class NCS(tf.keras.Model):
             + self.config.loss.bending * bending_loss
             + self.config.loss.collision_weight * collision_loss
             + gravitational_potential
-            + self.config.loss.developable * developable_loss
+            # + self.config.loss.developable * developable_loss
         )
         if self.garment.pinning:
             loss += self.config.loss.pinning * pinning_loss
@@ -199,7 +217,7 @@ class NCS(tf.keras.Model):
         self.bending_metric.update_state(bending_error)
         self.collision_metric.update_state(collision_error)
         self.gravity_metric.update_state(gravitational_potential)
-        self.developable_metric.update_state(developable_error)
+        # self.developable_metric.update_state(developable_error)
         return loss
 
     def compute_dynamic_losses_and_metrics(self, vertices):
@@ -208,13 +226,22 @@ class NCS(tf.keras.Model):
         return inertia_loss
 
     def train_step(self, inputs):
+        tf.debugging.enable_check_numerics()
+
         with tf.GradientTape() as tape:
             body, vertices, unskinned = self(inputs, training=True)
             loss = self.compute_losses_and_metrics(
                 body, vertices, unskinned, training=True
             )
         gradients = tape.gradient(loss, self.trainable_variables)
-        self.optimizer.apply_gradients(zip(gradients, self.trainable_variables))
+        # clip the gradients
+        # clipped_gradients = [tf.clip_by_norm(g, clip_norm=10.0) for g in gradients]
+        # check NAN grads
+        #if any(tf.reduce_any(tf.math.is_nan(clipped_gradients)) for grad in clipped_gradients if grad is not None):
+        #    raise ValueError("NaN gradient encountered")
+        clipped_gradients = [tf.clip_by_norm(g, clip_norm=10.0) for g in gradients]
+        tf.config.optimizer.set_jit(False)
+        self.optimizer.apply_gradients(zip(clipped_gradients, self.trainable_variables))
         return {m.name: m.result() for m in self.metrics}
 
     def test_step(self, inputs):

@@ -1,4 +1,7 @@
 import os
+
+os.environ['TF_XLA_FLAGS'] = '--tf_xla_auto_jit=0'
+
 import sys
 import argparse
 from shutil import rmtree
@@ -23,6 +26,7 @@ def make_model(config):
         checkpoint_path = os.path.join(CHECKPOINTS_DIR, config.experiment.checkpoint)
         model.load_weights(checkpoint_path)
     return model
+
 
 
 def main(config):
@@ -66,6 +70,7 @@ def main(config):
 
 
 if __name__ == "__main__":
+
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=str, required=True)
     parser.add_argument("--gpu_id", type=str, required=True)
@@ -82,7 +87,6 @@ if __name__ == "__main__":
     if not gpus:
         print("No GPU detected")
         sys.exit()
-
     config = MainConfig(opts.config)
-    
+    tf.config.optimizer.set_jit(False)  # Disable the JIT compiler
     main(config)

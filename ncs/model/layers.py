@@ -15,11 +15,12 @@ class FullyConnected(Layer):
         self.units = units
         self.act = act or (lambda x: x)
         self.use_bias = use_bias
+        self.bn = tf.keras.layers.BatchNormalization()
 
     def build(self, input_shape):
         self.kernel = self.add_weight(
             shape=(input_shape[-1], self.units),
-            initializer="random_normal",
+            initializer="glorot_normal",
             trainable=True,
             name="kernel",
         )
@@ -34,7 +35,9 @@ class FullyConnected(Layer):
         x = x[..., 0, :]
         if self.use_bias:
             x += self.bias
+        x = self.bn(x, training=True)
         x = self.act(x)
+
         return x
 
 

@@ -11,7 +11,7 @@
             "program": "${file}",
             "console": "integratedTerminal",
             "justMyCode": true,
-            "args": ["--config","/mnt/c/Users/JingchaoKong/NeuralClothSim/ncs/configs/mixamo.json",
+            "args": ["--config","/home/paperspace/NeuralClothSim/ncs/configs/mixamo.json",
                     "--gpu_id","0"]
         }
     ]

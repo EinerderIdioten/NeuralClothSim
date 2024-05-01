@@ -38,6 +38,7 @@
         "collision_threshold": 0.004,
         "density": 0.15,
         "pinning": 1e2,
-        "gravity": "-Y"
+        "gravity": "-Y",
+        "developable":0.1
     }
 }

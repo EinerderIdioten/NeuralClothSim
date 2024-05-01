@@ -486,24 +486,23 @@ class projDevLoss():
         
         except tf.errors.InvalidArgumentError as e:
             print(e)
-'''  
+'''
+
+
 class projDevLoss():
     def __init__(self, mesh, topo, garment):
         self.mesh = mesh
         self.topo = topo
         self.garment = garment
-        self.init = False
-        self.init_curvature = None
-        
         self.edge_ids, self.valid_edges, self.adj_faces = self.get_edge_tensor(self.mesh, self.topo)
+        self.init_curvature = self.get_init_curvature(self.garment.vertices)
     
     @tf.function
     def get_edge_tensor(self, mesh, topo):
         half_edges = []
         valid_edges = []
         adj_faces = []
-        
-        
+
         for eh in mesh.edges():
             edge_idx = eh.idx()
             
@@ -570,19 +569,18 @@ class projDevLoss():
         # quad vertices has shape (num_edges, 4, 3)
         edge_ids = tf.reshape(edge_ids, (-1, 6))
         # edge normals (10332, 3)
-        #gather_normals = [tf.gather(edge_normals[b], edge_ids, axis=0) for b in range(edge_normals.shape[0])]
+        # gather_normals = [tf.gather(edge_normals[b], edge_ids, axis=0) for b in range(edge_normals.shape[0])]
         N = tf.gather(edge_normals, edge_ids, axis=0)
         # N = tf.stack(gather_normals)
-        #diags are associated to each edge
-        #quad (10332, 4, 3)
+        # diags are associated to each edge
+        # quad (10332, 4, 3)
         diags = tf.stack([quad_vertices[:,2] - quad_vertices[:,0], quad_vertices[:,3] - quad_vertices[:,1]], axis=1)
-        #diags (10332, 2, 3)
+        # diags (10332, 2, 3)
         proj_plane_normals = tf.linalg.cross(diags[:,0], diags[:,1])
         # proj_plane_normals (10332, 3)
         
-        #areas = tf.linalg.norm(proj_plane_normals, axis=-1)
-        #areas_power = tf.math.pow(areas, 2/3)
-        #areas_power = tf.reshape(areas_power, (areas.shape[0], 1, 1))
+        # areas = tf.linalg.norm(proj_plane_normals, axis=-1)
+        # areas_power = tf.math.pow(areas, 2/3)
         
         # N (10332, 6, 3)
         dN = tf.stack([N[:,1]-N[:,4], N[:,2]-N[:,5]], axis=1)
@@ -595,49 +593,49 @@ class projDevLoss():
         B = Pr_dN
         l = 1e-5 * tf.eye(3, batch_shape=A[:,0,0].shape)
         A = A+l
+        #print(f'shape of A is {A.shape}')
 
+        # phi_tilde = tf.linalg.solve(A, B) / tf.reshape(areas_power, [-1, 1, 1])
         phi_tilde = tf.linalg.solve(A, B)
-        eigenvalues, _ = tf.linalg.eigh(phi_tilde)
-        return eigenvalues
+        singulars = tf.linalg.svd(phi_tilde, compute_uv=False)
+        print(singulars[..., :-1])
+        print(f'shape of singulars is {singulars.shape}')
+        singulars = singulars[..., :-1]
+
+        #print(f'shape of phi is {phi_tilde.shape}')
+        #eigenvalues, _ = tf.linalg.eig(phi_tilde)
+        return singulars
     
     @tf.function
     def get_curvature_one_frame(self, eigenvalues):
-        threshold = 1e-4
-        non_zero_eigenvalues = tf.where(tf.abs(eigenvalues) < threshold, 1.0, eigenvalues)
-        return tf.reduce_prod(non_zero_eigenvalues, axis=1)
-    
+        #threshold = 1e-4
+        #non_zero_eigenvalues = tf.where(tf.abs(eigenvalues) < threshold, 1.0, eigenvalues)
+        return tf.reduce_prod(eigenvalues, axis=1)
+
+    def get_init_curvature(self, init_vertices):
+        eigenvalues = self.get_eigen_one_frame(init_vertices)
+        init_curvature = self.get_curvature_one_frame(eigenvalues)
+        return init_curvature
+
     def __call__(self, vertices):
-        if self.init == False:
-            eigenvalues = self.get_eigen_one_frame(vertices[0])
-            self.init_curvature, cur_curvature = self.get_curvature_one_frame(eigenvalues)
-            self.init = True
-        else:
-            eigenvalues = self.get_eigen_one_frame(vertices[-1])
-            cur_curvature = self.get_curvature_one_frame(eigenvalues)
-        diff_per_edge = self.init_curvature - cur_curvature
-        loss = tf.norm(diff_per_edge,ord=2,axis=0)
-        error = tf.norm(diff_per_edge, ord=1, axis=0)
+        eigenvalues_start = self.get_eigen_one_frame(vertices[0])
+        eigenvalues_end = self.get_eigen_one_frame(vertices[-1])
+        start_curvature = self.get_curvature_one_frame(eigenvalues_start)
+        end_curvature = self.get_curvature_one_frame(eigenvalues_end)
+
+        diff_per_edge = tf.abs(start_curvature - end_curvature)
+        # there are a few (less than 50) NAN values on the boundaries
+        diff_per_edge = tf.where(tf.math.is_nan(diff_per_edge), tf.zeros_like(diff_per_edge, dtype=tf.float32), diff_per_edge)
+        diff_per_edge = tf.where(diff_per_edge > 100.0, tf.fill(diff_per_edge.shape, 100.0), diff_per_edge)
+        loss = tf.reduce_sum(diff_per_edge)
+        error = loss
         return loss, error
-        
+
 
         
             
 
-        # mask_not_zero = tf.not_equal(eigenvalues, 0.0)
-        # non_zero_eigenvalues = tf.reshape(tf.boolean_mask(eigenvalues, mask_not_zero),[eigenvalues.shape[0], 2])
-        # non_zero_eigenvalues = tf.boolean_mask(eigenvalues, mask_not_zero),[eigenvalues.shape[0], 2]
-        
-        # eigenvalues = eigenvalues[tf.abs(eigenvalues) > 0.000001]
-        # assert(eigenvalues.shape[1]==2),'less eigenvalues!'
-        
-        # delta_N = non_zero_eigenvalues[:,0] * non_zero_eigenvalues[:1]
-        energy_per_edge = tf.reduce_sum(tf.norm(eigenvalues, ord=2, axis=-1), axis=-1)
-        error_per_edge = tf.reduce_sum(tf.norm(eigenvalues, ord=1, axis=-1), axis = -1)
-        dev_loss = tf.reduce_mean(energy_per_edge, axis=0)
-        dev_error = tf.reduce_mean(error_per_edge, axis = 0)
-        
-        
-        return dev_loss, dev_error
+
 
     
     
